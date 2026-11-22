@@ -1,0 +1,25 @@
+{
+  "phase": "phase1_heal",
+  "init": "runs/upcycled",
+  "data_dir": "data/phase1",
+  "seq_len": 4096,
+  "micro_batch": 8,
+  "grad_accum": 1,
+  "total_steps": 7000,
+  "lr": 5e-4,
+  "warmup_steps": 100,
+  "decay_frac": 0.2,
+  "weight_decay": 0.1,
+  "freeze": ["embed_tokens.*", "norm.*", "layers.*.self_attn.*", "layers.*.linear_attn.*", "layers.*.input_layernorm.*"],
+  "unfreeze_after_frac": null,
+  "grad_checkpointing": true,
+  "out_dir": "runs/phase1",
+  "ckpt_minutes": 15,
+  "hub_repo": "denizulkuu/candidlm-checkpoints",
+  "log_every": 10,
+  "bootstrap": {
+    "data_repo": "denizulkuu/candidlm-data",
+    "data_mix": "configs/data_phase1.json",
+    "upcycle": {"src": "Qwen/Qwen3.5-0.8B-Base", "num_experts": 16, "top_k": 6}
+  }
+}

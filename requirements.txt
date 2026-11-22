@@ -1,0 +1,8 @@
+torch>=2.5
+numpy
+safetensors
+huggingface_hub>=0.26
+transformers>=5.0
+datasets>=3.0
+requests
+pytest

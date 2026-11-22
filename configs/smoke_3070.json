@@ -1,0 +1,16 @@
+{
+  "phase": "smoke_3070",
+  "tiny": true,
+  "data_dir": "data/smoke",
+  "seq_len": 128,
+  "micro_batch": 8,
+  "total_steps": 200,
+  "lr": 3e-3,
+  "warmup_steps": 20,
+  "freeze": [],
+  "grad_checkpointing": false,
+  "out_dir": "runs/smoke",
+  "ckpt_minutes": 1,
+  "hub_repo": null,
+  "log_every": 10
+}
