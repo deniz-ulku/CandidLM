@@ -104,7 +104,7 @@ class GatedAttention(nn.Module):
         self.q_norm = RMSNorm(self.hd, cfg.rms_norm_eps)
         self.k_norm = RMSNorm(self.hd, cfg.rms_norm_eps)
 
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, cache: dict | None = None) -> torch.Tensor:
         B, T, _ = x.shape
         qg = self.q_proj(x).view(B, T, self.n_heads, self.hd * 2)
         q, gate = qg.chunk(2, dim=-1)
@@ -114,11 +114,20 @@ class GatedAttention(nn.Module):
         v = self.v_proj(x).view(B, T, self.n_kv, self.hd).transpose(1, 2)
         q = apply_partial_rope(q, cos, sin)
         k = apply_partial_rope(k, cos, sin)
+        causal = True
+        if cache is not None:
+            if "k" in cache:
+                if T != 1:
+                    raise ValueError("cached attention supports a prefill then one token at a time")
+                k = torch.cat([cache["k"], k], dim=2)
+                v = torch.cat([cache["v"], v], dim=2)
+                causal = False  # one new query may see every cached position
+            cache["k"], cache["v"] = k, v
         rep = self.n_heads // self.n_kv
         if rep > 1:
             k = k.repeat_interleave(rep, dim=1)
             v = v.repeat_interleave(rep, dim=1)
-        o = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        o = F.scaled_dot_product_attention(q, k, v, is_causal=causal)
         o = o.transpose(1, 2).reshape(B, T, self.n_heads * self.hd)
         o = o * torch.sigmoid(gate)
         return self.o_proj(o)
@@ -131,7 +140,7 @@ def _l2norm(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     return x * torch.rsqrt((x * x).sum(-1, keepdim=True) + eps)
 
 
-def gated_delta_rule_recurrent(q, k, v, g, beta):
+def gated_delta_rule_recurrent(q, k, v, g, beta, initial_state=None, return_state=False):
     """Reference token-by-token gated delta rule. q,k: [B,T,H,Dk]; v: [B,T,H,Dv]; g,beta: [B,T,H].
 
     S_t = exp(g_t) * S_{t-1} + beta_t * k_t (v_t - S_{t-1}^T k_t)^T ;  o_t = S_t^T q_t
@@ -142,7 +151,7 @@ def gated_delta_rule_recurrent(q, k, v, g, beta):
     B, T, H, Dk = k.shape
     Dv = v.shape[-1]
     q = q * Dk**-0.5
-    S = q.new_zeros(B, H, Dk, Dv)
+    S = q.new_zeros(B, H, Dk, Dv) if initial_state is None else initial_state.float()
     out = []
     for t in range(T):
         S = S * g[:, t].exp()[..., None, None]
@@ -151,10 +160,11 @@ def gated_delta_rule_recurrent(q, k, v, g, beta):
         delta = (vt - pred) * beta[:, t, :, None]
         S = S + kt[..., :, None] * delta[..., None, :]
         out.append(torch.einsum("bhkv,bhk->bhv", S, qt))
-    return torch.stack(out, dim=1).to(dtype)
+    o = torch.stack(out, dim=1).to(dtype)
+    return (o, S) if return_state else o
 
 
-def gated_delta_rule_chunked(q, k, v, g, beta, chunk: int = 64):
+def gated_delta_rule_chunked(q, k, v, g, beta, chunk: int = 64, initial_state=None, return_state=False):
     """Chunked (WY / UT-transform) gated delta rule, same semantics as the recurrent version.
 
     Within a chunk the delta-rule updates are folded into a triangular solve, so the
@@ -191,7 +201,7 @@ def gated_delta_rule_chunked(q, k, v, g, beta, chunk: int = 64):
     k_dec = k * (gc[..., -1:] - gc).exp()[..., None]
     chunk_decay = gc[..., -1].exp()[..., None, None]
 
-    S = q.new_zeros(B, H, Dk, Dv)
+    S = q.new_zeros(B, H, Dk, Dv) if initial_state is None else initial_state.float()
     outs = []
     for i in range(n):
         v_new = u[:, :, i] - w[:, :, i] @ S
@@ -199,7 +209,8 @@ def gated_delta_rule_chunked(q, k, v, g, beta, chunk: int = 64):
         outs.append(o)
         S = S * chunk_decay[:, :, i] + k_dec[:, :, i].transpose(-1, -2) @ v_new
     o = torch.stack(outs, dim=2).reshape(B, H, n * chunk, Dv)[:, :, :T]
-    return o.transpose(1, 2).to(dtype)
+    o = o.transpose(1, 2).to(dtype)
+    return (o, S) if return_state else o
 
 
 class GatedDeltaNet(nn.Module):
@@ -225,10 +236,19 @@ class GatedDeltaNet(nn.Module):
         self.out_proj = nn.Linear(self.value_dim, h, bias=False)
         self.use_kernel = True
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cache: dict | None = None) -> torch.Tensor:
         B, T, _ = x.shape
         qkv = self.in_proj_qkv(x).transpose(1, 2)
-        qkv = F.silu(self.conv1d(qkv)[..., :T]).transpose(1, 2)
+        if cache is not None:
+            prev = cache.get("conv")
+            if prev is None:
+                prev = qkv.new_zeros(B, qkv.shape[1], self.kernel - 1)
+            full = torch.cat([prev, qkv], dim=-1)
+            cache["conv"] = full[..., -(self.kernel - 1):]
+            qkv = F.conv1d(full, self.conv1d.weight, groups=full.shape[1])
+            qkv = F.silu(qkv).transpose(1, 2)
+        else:
+            qkv = F.silu(self.conv1d(qkv)[..., :T]).transpose(1, 2)
         q, k, v = torch.split(qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         q = q.reshape(B, T, self.nk, self.dk)
         k = k.reshape(B, T, self.nk, self.dk)
@@ -240,11 +260,15 @@ class GatedDeltaNet(nn.Module):
             rep = self.nv // self.nk
             q = q.repeat_interleave(rep, dim=2)
             k = k.repeat_interleave(rep, dim=2)
-        if _fla_chunk_gdr is not None and x.is_cuda and self.use_kernel:
+        state = None if cache is None else cache.get("state")
+        if _fla_chunk_gdr is not None and x.is_cuda and self.use_kernel and cache is None:
             o, _ = _fla_chunk_gdr(q, k, v, g=g, beta=beta, use_qk_l2norm_in_kernel=True)
         else:
             q, k = _l2norm(q.float()).to(q.dtype), _l2norm(k.float()).to(k.dtype)
-            o = gated_delta_rule_chunked(q, k, v, g, beta)
+            fn = gated_delta_rule_recurrent if T <= 8 else gated_delta_rule_chunked
+            o, S = fn(q, k, v, g, beta, initial_state=state, return_state=True)
+            if cache is not None:
+                cache["state"] = S
         o = self.norm(o.reshape(-1, self.dv), z.reshape(-1, self.dv)).reshape(B, T, self.value_dim)
         return self.out_proj(o)
 
@@ -343,9 +367,9 @@ class Block(nn.Module):
         else:
             self.mlp = MLP(cfg.hidden_size, cfg.dense_intermediate_size)
 
-    def forward(self, x, cos, sin):
+    def forward(self, x, cos, sin, cache: dict | None = None):
         h = self.input_layernorm(x)
-        h = self.self_attn(h, cos, sin) if self.kind == "full_attention" else self.linear_attn(h)
+        h = self.self_attn(h, cos, sin, cache) if self.kind == "full_attention" else self.linear_attn(h, cache)
         x = x + h
         return x + self.mlp(self.post_attention_layernorm(x))
 
@@ -398,6 +422,32 @@ def chunked_ce(hidden: torch.Tensor, weight: torch.Tensor, targets: torch.Tensor
     return total / n_valid
 
 
+def chunked_kd(hidden: torch.Tensor, weight: torch.Tensor, topk_idx: torch.Tensor, topk_logp: torch.Tensor,
+               valid: torch.Tensor, chunk: int = 1024) -> torch.Tensor:
+    """Sparse logit distillation: cross-entropy from the teacher's top-K distribution to the student.
+
+    topk_idx / topk_logp: [B, T, K] teacher token ids and log-probs (renormalised over K here).
+    valid: [B, T] bool, positions that count (assistant tokens).
+    """
+    H = hidden.shape[-1]
+    hidden = hidden.reshape(-1, H)
+    idx = topk_idx.reshape(hidden.shape[0], -1).long()
+    tp = torch.softmax(topk_logp.reshape(hidden.shape[0], -1).float(), dim=-1)
+    valid = valid.reshape(-1)
+    n = valid.sum().clamp(min=1)
+
+    def _piece(h, i, p, v):
+        logq = torch.log_softmax((h @ weight.t()).float(), dim=-1)
+        ce = -(p * logq.gather(-1, i)).sum(-1)
+        return (ce * v).sum()
+
+    total = hidden.new_zeros((), dtype=torch.float32)
+    for s in range(0, hidden.shape[0], chunk):
+        args = (hidden[s:s + chunk], idx[s:s + chunk], tp[s:s + chunk], valid[s:s + chunk].float())
+        total = total + (checkpoint(_piece, *args, use_reentrant=False) if torch.is_grad_enabled() else _piece(*args))
+    return total / n
+
+
 class CandidLM(nn.Module):
     def __init__(self, cfg: CandidConfig):
         super().__init__()
@@ -445,25 +495,80 @@ class CandidLM(nn.Module):
                 x = layer(x, cos, sin)
         return self.norm(x), cos, sin
 
-    def forward(self, input_ids: torch.Tensor, targets: torch.Tensor | None = None):
+    def forward(self, input_ids: torch.Tensor, targets: torch.Tensor | None = None,
+                next_ids: torch.Tensor | None = None, teacher: dict | None = None, kd_weight: float = 0.0):
         """Returns logits when targets is None, else a dict of losses.
 
-        targets[t] is the token after input_ids[t]. The MTP head uses targets[t+1].
+        targets[t] is the token after input_ids[t] (-100 = not trained, e.g. user turns in SFT).
+        next_ids[t] is that token even where it is masked (defaults to targets); the MTP head
+        embeds it and predicts targets[t+1].
+        teacher: {"idx": [B,T,K], "logp": [B,T,K]} for logit distillation (phase 3).
         """
         h, cos, sin = self.hidden_states(input_ids)
         if targets is None:
             return h @ self.head_weight.t()
         loss_main = chunked_ce(h, self.head_weight, targets)
         out = {"loss_main": loss_main, "loss": loss_main}
+        if teacher is not None and kd_weight > 0:
+            valid = targets != -100
+            if "has" in teacher:
+                valid = valid & teacher["has"][:, None]
+            loss_kd = chunked_kd(h, self.head_weight, teacher["idx"], teacher["logp"], valid)
+            out["loss_kd"] = loss_kd
+            out["loss"] = (1 - kd_weight) * loss_main + kd_weight * loss_kd
         if self.mtp is not None and h.shape[1] > 1:
-            nxt = targets.clamp(min=0)  # embedding of token t+1
+            nxt = (targets if next_ids is None else next_ids).clamp(min=0)  # embedding of token t+1
             m = self.mtp(h, self.embed_tokens(nxt), cos, sin)
             mtp_targets = torch.full_like(targets, -100)
             mtp_targets[:, :-1] = targets[:, 1:]
             loss_mtp = chunked_ce(m, self.head_weight, mtp_targets)
             out["loss_mtp"] = loss_mtp
-            out["loss"] = loss_main + self.cfg.mtp_loss_weight * loss_mtp
+            out["loss"] = out["loss"] + self.cfg.mtp_loss_weight * loss_mtp
         return out
+
+    @torch.no_grad()
+    def step(self, input_ids: torch.Tensor, cache: dict) -> torch.Tensor:
+        """Incremental decoding: feed new tokens, get logits for them. `cache` starts as {}."""
+        x = self.embed_tokens(input_ids)
+        pos0 = cache.get("pos", 0)
+        T = x.shape[1]
+        cos, sin = self.rotary(torch.arange(pos0, pos0 + T, device=x.device), x.dtype)
+        layers = cache.setdefault("layers", [{} for _ in self.layers])
+        for layer, c in zip(self.layers, layers):
+            x = layer(x, cos, sin, c)
+        cache["pos"] = pos0 + T
+        return self.norm(x) @ self.head_weight.t()
+
+    @torch.no_grad()
+    def generate_cached(self, input_ids: torch.Tensor, max_new_tokens: int = 64, temperature: float = 0.0,
+                        top_p: float = 1.0, eos_id: int | None = None, generator=None):
+        """Fast sampling with KV cache (attention) and recurrent state (DeltaNet).
+        Returns (tokens [B, T+new], logprobs of sampled tokens [B, new])."""
+        cache: dict = {}
+        logits = self.step(input_ids, cache)[:, -1].float()
+        out, lps = [input_ids], []
+        done = torch.zeros(input_ids.shape[0], dtype=torch.bool, device=input_ids.device)
+        for _ in range(max_new_tokens):
+            logp = F.log_softmax(logits / max(temperature, 1e-6), -1) if temperature > 0 else F.log_softmax(logits, -1)
+            if temperature <= 0:
+                nxt = logits.argmax(-1, keepdim=True)
+            else:
+                probs = logp.exp()
+                if top_p < 1.0:
+                    sp, si = probs.sort(-1, descending=True)
+                    keep = sp.cumsum(-1) - sp < top_p
+                    probs = torch.zeros_like(probs).scatter(-1, si, sp * keep)
+                    probs = probs / probs.sum(-1, keepdim=True)
+                nxt = torch.multinomial(probs, 1, generator=generator)
+            if eos_id is not None:
+                nxt = torch.where(done[:, None], torch.full_like(nxt, eos_id), nxt)
+                done = done | (nxt[:, 0] == eos_id)
+            lps.append(logp.gather(-1, nxt))
+            out.append(nxt)
+            if eos_id is not None and bool(done.all()):
+                break
+            logits = self.step(nxt, cache)[:, -1].float()
+        return torch.cat(out, 1), torch.cat(lps, 1)
 
     @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, max_new_tokens: int = 32, temperature: float = 0.0):

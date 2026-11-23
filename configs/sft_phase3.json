@@ -1,0 +1,4 @@
+{
+  "reasoning": {"dataset": "open-r1/Mixture-of-Thoughts", "config": "all", "messages": "messages", "samples": 30000},
+  "chat":      {"dataset": "HuggingFaceTB/smoltalk", "config": "all", "messages": "messages", "samples": 25000}
+}

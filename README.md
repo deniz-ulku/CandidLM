@@ -25,6 +25,13 @@ A small hybrid MoE language model, built and trained by Deniz on a ~$5 GPU budge
 | `scripts/bootstrap.py` | Prepare a fresh GPU box (data + starting model) |
 | `scripts/onstart.sh` | What every Vast instance runs on boot |
 | `scripts/vast_watcher.py` | Keeps one instance alive, re-rents after outbids, enforces the credit floor (dry run by default) |
+| `candidlm/sft.py` | Chat rendering with assistant-only loss masks, packing, SFT loader (+ teacher logits) |
+| `candidlm/lora.py` | LoRA adapters (attention, DeltaNet, shared expert) for the 3070 |
+| `candidlm/memory.py` | Knows-me memory, private mode, project memory, forget/blocklist, predictions |
+| `scripts/prepare_sft.py` | Build masked SFT shards (formal system prompt in every sample) |
+| `scripts/teacher_logits.py` | Phase 2: add Qwen3.5-4B top-32 logits to SFT shards |
+| `scripts/export.py` | Checkpoint -> model dir for the next phase |
+| `scripts/grpo.py` | Phase 4 on the 3070: GRPO with LoRA on GSM8K, resumable |
 | `configs/` | Phase configs and data mixes |
 
 ## Run
@@ -42,5 +49,8 @@ python scripts/vast_watcher.py --phase phase1_heal --launch   # rents and keeps 
 - [x] Phase 0: model, upcycle, optimizer, data, checkpoints, training loop, watcher; tests pass on CPU
 - [ ] Phase 0b: first real upcycle of Qwen3.5-0.8B-Base and a 3070 smoke run (needs Hugging Face access)
 - [ ] Phase 1: healing (~230M tokens, ~7.5 GPU-hours)
-- [ ] Phase 2-3: teacher logits, distillation + reasoning SFT (code to come)
+- [x] Phase 2-3 code: teacher logits, distillation + reasoning SFT, phase chaining
+- [x] Phase 4 code: GRPO with LoRA, fast cached generation (KV cache + DeltaNet state)
+- [x] Memory system: knows-me, private mode, projects, forget, predictions (offline embedding fallback)
+- [ ] Phase 2-4 runs
 - [ ] Vision path: reuse Qwen3.5's vision encoder with our language model (code to come)

@@ -22,12 +22,15 @@ import torch
 from . import checkpoint as ck
 from .config import CandidConfig, tiny_config
 from .data import TokenLoader
+from .sft import SFTLoader
 from .model import CandidLM
 from .optim import CombinedOptimizer, wsd_lr
 
 DEFAULTS = dict(
     phase="phase1_heal",
-    init=None,                 # dir with config.json + model.pt (from candidlm.upcycle)
+    init=None,                 # dir with config.json + model.pt (from candidlm.upcycle or export)
+    data_type="pretrain",      # "pretrain" (token shards) or "sft" (masked chat shards, optional teacher)
+    kd_weight=0.0,             # phase 3: weight of the teacher-distillation loss
     tiny=False,                # use the tiny test config with random weights
     data_dir="data/phase1",
     data_weights=None,
@@ -108,8 +111,11 @@ def run(tc: dict) -> list[dict]:
 
     model = build_model(tc, device)
     model.grad_checkpointing = tc["grad_checkpointing"]
-    loader = TokenLoader(tc["data_dir"], tc["seq_len"], tc["micro_batch"], seed=tc["seed"],
-                         weights=tc.get("data_weights"))
+    if tc.get("data_type", "pretrain") == "sft":
+        loader = SFTLoader(tc["data_dir"], tc["micro_batch"], seed=tc["seed"])
+    else:
+        loader = TokenLoader(tc["data_dir"], tc["seq_len"], tc["micro_batch"], seed=tc["seed"],
+                             weights=tc.get("data_weights"))
 
     step = 0
     state = None
@@ -168,12 +174,17 @@ def run(tc: dict) -> list[dict]:
 
         lr = wsd_lr(step, tc["total_steps"], tc["lr"], tc["warmup_steps"], tc["decay_frac"])
         opt.set_lr(lr)
-        logs = {"loss": 0.0, "loss_main": 0.0, "loss_mtp": 0.0}
+        logs = {"loss": 0.0, "loss_main": 0.0, "loss_mtp": 0.0, "loss_kd": 0.0}
         for _ in range(tc["grad_accum"]):
-            x, y = loader.next_batch()
-            x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+            b = loader.next_batch()
+            if isinstance(b, tuple):
+                b = {"x": b[0], "y": b[1]}
+            b = {k: ({kk: vv.to(device) for kk, vv in v.items()} if isinstance(v, dict) else v.to(device))
+                 for k, v in b.items()}
+            x = b["x"]
             with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp):
-                out = model(x, y)
+                out = model(x, b["y"], next_ids=b.get("next_ids"), teacher=b.get("teacher"),
+                            kd_weight=tc.get("kd_weight", 0.0))
             (out["loss"] / tc["grad_accum"]).backward()
             for k in logs:
                 if k in out:

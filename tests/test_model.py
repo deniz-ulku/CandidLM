@@ -97,3 +97,36 @@ def test_mtp_and_params():
     out = m(ids[:, :-1], ids[:, 1:])
     assert set(out) >= {"loss", "loss_main", "loss_mtp"}
     assert m.num_params(active=True) < m.num_params()
+
+
+def test_cached_decoding_matches_full_forward():
+    torch.manual_seed(0)
+    m = CandidLM(tiny_config()).eval()
+    ids = torch.randint(0, 512, (2, 21))
+    full = m(ids)
+    cache = {}
+    pre = m.step(ids[:, :13], cache)
+    steps = [m.step(ids[:, t:t + 1], cache) for t in range(13, 21)]
+    inc = torch.cat([pre] + steps, dim=1)
+    assert torch.allclose(full, inc, atol=1e-4), (full - inc).abs().max()
+    out, lp = m.generate_cached(ids[:, :5], max_new_tokens=6)
+    ref = m.generate(ids[:, :5], max_new_tokens=6)
+    assert torch.equal(out, ref)
+
+
+def test_lora_wraps_and_merges():
+    from candidlm.lora import add_lora, lora_state_dict, merge_all
+    m = CandidLM(tiny_config()).eval()
+    ids = torch.randint(0, 512, (1, 16))
+    base = m(ids)
+    names = add_lora(m, r=4)
+    assert names and all(p.requires_grad == ("lora_" in n) for n, p in m.named_parameters())
+    assert torch.allclose(m(ids), base, atol=1e-5)  # B starts at zero
+    with torch.no_grad():
+        for n, p in m.named_parameters():
+            if "lora_B" in n:
+                p.normal_(std=0.02)
+    adapted = m(ids)
+    merge_all(m)
+    assert torch.allclose(m(ids), adapted, atol=1e-4)
+    assert len(lora_state_dict(m)) == 2 * len(names)

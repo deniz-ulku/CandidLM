@@ -1,0 +1,25 @@
+{
+  "phase": "phase3_distill_sft",
+  "init": "runs/after_phase1",
+  "data_type": "sft",
+  "data_dir": "data/sft",
+  "seq_len": 4096,
+  "micro_batch": 8,
+  "grad_accum": 1,
+  "total_steps": 4500,
+  "lr": 2e-4,
+  "warmup_steps": 50,
+  "decay_frac": 0.3,
+  "kd_weight": 0.5,
+  "freeze": ["embed_tokens.*"],
+  "grad_checkpointing": true,
+  "out_dir": "runs/phase3",
+  "ckpt_minutes": 15,
+  "hub_repo": "denizulkuu/candidlm-checkpoints",
+  "bootstrap": {
+    "from_phase": "phase1_heal",
+    "data_repo": "denizulkuu/candidlm-data",
+    "sft_mix": "configs/sft_phase3.json",
+    "teacher": {"model": "Qwen/Qwen3.5-4B", "k": 32, "max_rows": 3700}
+  }
+}
