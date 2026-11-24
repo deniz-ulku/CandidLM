@@ -57,7 +57,8 @@ def search_offers(key, gpus: list[str], max_price: float, interruptible: bool) -
         "gpu_ram": {"gte": 23000},
         "reliability2": {"gte": 0.98},
         "inet_down": {"gte": 300},
-        "cuda_max_good": {"gte": 12.4},
+        "inet_up": {"gte": 200},  # a full checkpoint goes up to Hugging Face every 15 min
+        "cuda_max_good": {"gte": 12.8},
         "disk_space": {"gte": 80},
         "type": "bid" if interruptible else "on-demand",
         "order": [["dph_total", "asc"]],
@@ -94,21 +95,25 @@ def destroy(key, inst_id):
     requests.delete(f"{API}/instances/{inst_id}/", headers=_h(key), timeout=30).raise_for_status()
 
 
-def phase_done(hf_repo: str, phase: str, token: str) -> bool:
+def phase_marker(hf_repo: str, phase: str, token: str) -> str | None:
+    """'DONE' when the phase finished, 'FAILED' when the box hit an error it cannot recover from."""
     try:
         from huggingface_hub import HfApi
         files = HfApi(token=token).list_repo_files(hf_repo)
-        return f"{phase}/DONE" in files
     except Exception:
-        return False
+        return None
+    for m in ("DONE", "FAILED"):
+        if f"{phase}/{m}" in files:
+            return m
+    return None
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=True)
     ap.add_argument("--config", help="training config path inside the repo, default configs/<phase>.json")
-    ap.add_argument("--hf-repo", default="denizulkuu/candidlm-checkpoints")
-    ap.add_argument("--image", default="pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel")
+    ap.add_argument("--hf-repo", default="Denizulkuu/candidlm-checkpoints")
+    ap.add_argument("--image", default="pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime")
     ap.add_argument("--git", default="https://github.com/deniz-ulku/CandidLM.git")
     ap.add_argument("--branch", default="main")
     ap.add_argument("--gpus", default="RTX 4090,RTX 3090")
@@ -144,8 +149,11 @@ def main():
             with open(spent_log, "a") as f:
                 f.write(json.dumps({"t": time.time(), "phase": a.phase, "credit": c}) + "\n")
 
-            if c < a.min_credit or phase_done(a.hf_repo, a.phase, token):
-                reason = "credit floor reached" if c < a.min_credit else "phase finished"
+            marker = phase_marker(a.hf_repo, a.phase, token)
+            if c < a.min_credit or marker:
+                reason = ("credit floor reached" if c < a.min_credit else
+                          "phase finished" if marker == "DONE" else
+                          f"run failed: see {a.phase}/FAILED in {a.hf_repo}")
                 print(f"[watch] {reason}: destroying instances and stopping", flush=True)
                 if a.launch:
                     for i in insts:

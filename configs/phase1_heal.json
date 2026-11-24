@@ -15,10 +15,10 @@
   "grad_checkpointing": true,
   "out_dir": "runs/phase1",
   "ckpt_minutes": 15,
-  "hub_repo": "denizulkuu/candidlm-checkpoints",
+  "hub_repo": "Denizulkuu/candidlm-checkpoints",
   "log_every": 10,
   "bootstrap": {
-    "data_repo": "denizulkuu/candidlm-data",
+    "data_repo": "Denizulkuu/candidlm-data",
     "data_mix": "configs/data_phase1.json",
     "upcycle": {"src": "Qwen/Qwen3.5-0.8B-Base", "num_experts": 16, "top_k": 6}
   }

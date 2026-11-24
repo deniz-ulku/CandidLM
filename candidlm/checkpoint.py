@@ -106,9 +106,18 @@ class HubSync:
         files = self.api.list_repo_files(self.repo_id)
         steps = sorted({f.split("/")[1] for f in files if f.startswith(self.prefix + "/step_")})
         keep = {f.split("/")[1] for f in files if f.endswith("/KEEP") and f.startswith(self.prefix + "/")}
+        pruned = False
         for s in [s for s in steps if s not in keep][:-self.keep]:
             self.api.delete_folder(path_in_repo=f"{self.prefix}/{s}", repo_id=self.repo_id,
                                    commit_message=f"prune {s}")
+            pruned = True
+        if pruned:
+            # Deleted files still count toward the free Hugging Face storage quota while they sit in
+            # git history; squashing drops them so the repo only ever holds the last `keep` checkpoints.
+            try:
+                self.api.super_squash_history(repo_id=self.repo_id, commit_message="squash old checkpoints")
+            except Exception as e:
+                print(f"[ckpt] history squash failed (storage may grow): {e}", flush=True)
 
     def mark_done(self, step: int) -> None:
         if self.enabled:

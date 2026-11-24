@@ -15,10 +15,10 @@
   "grad_checkpointing": true,
   "out_dir": "runs/phase3",
   "ckpt_minutes": 15,
-  "hub_repo": "denizulkuu/candidlm-checkpoints",
+  "hub_repo": "Denizulkuu/candidlm-checkpoints",
   "bootstrap": {
     "from_phase": "phase1_heal",
-    "data_repo": "denizulkuu/candidlm-data",
+    "data_repo": "Denizulkuu/candidlm-data",
     "sft_mix": "configs/sft_phase3.json",
     "teacher": {"model": "Qwen/Qwen3.5-4B", "k": 32, "max_rows": 3700}
   }

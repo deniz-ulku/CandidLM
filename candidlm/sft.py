@@ -30,7 +30,7 @@ def render_with_mask(tok, messages: list[dict], system: str | None = FORMAL_SYST
     ids: list[int] = []
     mask: list[int] = []
     for i, m in enumerate(msgs):
-        upto = tok.apply_chat_template(msgs[: i + 1], tokenize=True, **tmpl_kwargs)
+        upto = tok.apply_chat_template(msgs[: i + 1], tokenize=True, return_dict=False, **tmpl_kwargs)
         upto = list(upto["input_ids"] if isinstance(upto, dict) else upto)
         if upto[: len(ids)] != ids:  # template re-rendered earlier turns differently: fall back to whole-turn diff
             upto = ids + upto[len(ids):]

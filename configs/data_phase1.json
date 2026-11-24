@@ -1,7 +1,7 @@
 {
   "web":      {"dataset": "HuggingFaceFW/fineweb-edu", "config": "sample-10BT", "field": "text", "tokens": 108000000, "weight": 0.45},
   "turkish":  {"dataset": "HuggingFaceFW/fineweb-2", "config": "tur_Latn", "field": "text", "tokens": 36000000, "weight": 0.15},
-  "code":     {"dataset": "bigcode/the-stack-smol", "config": null, "field": "content", "tokens": 48000000, "weight": 0.20},
+  "code":     {"dataset": "codeparrot/codeparrot-clean", "config": null, "field": "content", "tokens": 48000000, "weight": 0.2},
   "math":     {"dataset": "HuggingFaceTB/finemath", "config": "finemath-4plus", "field": "text", "tokens": 36000000, "weight": 0.15},
   "instruct": {"dataset": "HuggingFaceTB/smoltalk", "config": "all", "messages": "messages", "tokens": 12000000, "weight": 0.05}
 }

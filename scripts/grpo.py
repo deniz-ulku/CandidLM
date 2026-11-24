@@ -108,7 +108,7 @@ def main():
         for q, gold in batch:
             msgs = [{"role": "system", "content": FORMAL_SYSTEM},
                     {"role": "user", "content": q + "\nPut the final answer in \\boxed{}."}]
-            p_ids = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True)
+            p_ids = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True, return_dict=False)
             p_ids = list(p_ids["input_ids"] if isinstance(p_ids, dict) else p_ids)
             prompt = torch.tensor([p_ids] * a.group, device=dev)
             model.eval()

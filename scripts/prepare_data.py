@@ -1,6 +1,6 @@
 """Stream open datasets from Hugging Face, tokenise with the Qwen3.5 tokenizer, write uint32 shards.
 
-  python -m scripts.prepare_data --mix configs/data_phase1.json --out data/phase1 [--upload denizulkuu/candidlm-data]
+  python -m scripts.prepare_data --mix configs/data_phase1.json --out data/phase1 [--upload Denizulkuu/candidlm-data]
 
 The mix file lists sources: {"name": {"dataset", "config", "split", "field" | "messages", "tokens", "weight"}}.
 """
@@ -32,7 +32,7 @@ def token_stream(src: dict, tok, budget: int, batch: int = 256):
 
     def encode(items):
         if "messages" in src:
-            return [tok.apply_chat_template(m, tokenize=True) for m in items]
+            return [tok.apply_chat_template(m, tokenize=True, return_dict=False) for m in items]
         return tok(items, add_special_tokens=False)["input_ids"]
 
     for item in stream_texts(src):
@@ -77,3 +77,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # Streaming datasets leave download threads behind that keep the process alive after the last
+    # shard is written (seen with smoltalk); exit hard so bootstrap moves on to training.
+    import sys
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

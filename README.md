@@ -47,7 +47,7 @@ python scripts/vast_watcher.py --phase phase1_heal --launch   # rents and keeps 
 ## Status
 
 - [x] Phase 0: model, upcycle, optimizer, data, checkpoints, training loop, watcher; tests pass on CPU
-- [ ] Phase 0b: first real upcycle of Qwen3.5-0.8B-Base and a 3070 smoke run (needs Hugging Face access)
+- [x] Phase 0b: real upcycle of Qwen3.5-0.8B-Base (no missing/unused keys; dense copy matches HF transformers logits to 3e-5), phase 1 data built (240M tokens) and on the hub, hub checkpoint save/resume/prune verified
 - [ ] Phase 1: healing (~230M tokens, ~7.5 GPU-hours)
 - [x] Phase 2-3 code: teacher logits, distillation + reasoning SFT, phase chaining
 - [x] Phase 4 code: GRPO with LoRA, fast cached generation (KV cache + DeltaNet state)
