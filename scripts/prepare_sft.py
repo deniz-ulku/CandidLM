@@ -10,7 +10,7 @@ import argparse
 import json
 import random
 
-from candidlm.sft import pack, render_with_mask, write_sft_shards
+from candidlm.sft import pack, render_samples, write_sft_shards
 
 
 def main():
@@ -32,10 +32,10 @@ def main():
         got = 0
         for row in ds:
             msgs = [{"role": m["role"], "content": m["content"]} for m in row[src.get("messages", "messages")]]
-            ids, mask = render_with_mask(tok, msgs)
-            if len(ids) > a.seq_len + 1 or sum(mask) == 0:
+            kept = [(i, m) for i, m in render_samples(tok, msgs) if len(i) <= a.seq_len + 1 and sum(m)]
+            if not kept:
                 continue
-            samples.append((ids, mask))
+            samples.extend(kept)
             got += 1
             if got >= want:
                 break

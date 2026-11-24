@@ -58,6 +58,29 @@ def render_with_mask(tok, messages: list[dict], system: str | None = FORMAL_SYST
     return ids, mask
 
 
+def render_samples(tok, messages: list[dict], system: str | None = FORMAL_SYSTEM, max_turns: int = 3,
+                   **tmpl_kwargs):
+    """Like render_with_mask, but recovers turns the template rewrites: any assistant turn left
+    untrained becomes its own sample (the conversation up to and including that turn).
+    At most `max_turns` samples per conversation, latest turns first."""
+    ids, mask = render_with_mask(tok, messages, system, **tmpl_kwargs)
+    if not ids:
+        return []
+    out = [(ids, mask)]
+    msgs = list(messages)
+    turns = [i for i, m in enumerate(msgs) if m["role"] == "assistant"][:-1]
+    n_trained_turns = sum(1 for a, b in zip([0] + mask, mask) if b and not a)  # rising edges
+    if n_trained_turns >= len(turns) + 1:
+        return out  # every turn already trained in the full render
+    for i in reversed(turns):
+        if len(out) >= max_turns:
+            break
+        sub_ids, sub_mask = render_with_mask(tok, msgs[: i + 1], system, **tmpl_kwargs)
+        if sum(sub_mask):
+            out.append((sub_ids, sub_mask))
+    return out
+
+
 def pack(samples, seq_len: int, pad_id: int):
     """Greedy-pack (ids, mask) pairs into windows of seq_len+1 tokens. Over-long samples are cut."""
     W = seq_len + 1

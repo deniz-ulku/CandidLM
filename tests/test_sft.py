@@ -83,3 +83,15 @@ def test_render_with_mask_real_template_rules():
              {"role": "user", "content": "bye"}, {"role": "assistant", "content": "Goodbye."}]
     ids, mask = render_with_mask(tok, plain)
     assert "".join(chr(i) for i, m in zip(ids, mask) if m) == "Hello.<end>Goodbye.<end>"
+
+
+def test_render_samples_recovers_rewritten_turns():
+    from candidlm.sft import render_samples
+    tok = FakeQwenTok()
+    msgs = [{"role": "user", "content": "2+2?"}, {"role": "assistant", "content": "<think>add</think>4"},
+            {"role": "user", "content": "times 3?"}, {"role": "assistant", "content": "<think>mul</think>12"}]
+    trained = ["".join(chr(i) for i, m in zip(ids, mask) if m) for ids, mask in render_samples(tok, msgs)]
+    assert trained == ["<think>mul</think>12<end>", "<think>add</think>4<end>"]
+    plain = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "Hello."},
+             {"role": "user", "content": "bye"}, {"role": "assistant", "content": "Goodbye."}]
+    assert len(render_samples(tok, plain)) == 1  # nothing lost, no duplicates
