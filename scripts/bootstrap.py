@@ -43,14 +43,7 @@ def main():
         if not got and boot.get("sft_mix"):
             sh(sys.executable, "-m", "scripts.prepare_sft", "--mix", boot["sft_mix"], "--out", data_dir,
                "--seq-len", str(tc["seq_len"]))
-            t = boot.get("teacher")
-            if t:  # phase 2 runs here, on the same box, right before phase 3
-                cmd = [sys.executable, "-m", "scripts.teacher_logits", "--data", data_dir,
-                       "--teacher", t["model"], "--k", str(t.get("k", 32))]
-                if t.get("max_rows"):
-                    cmd += ["--max-rows", str(t["max_rows"])]
-                sh(*cmd)
-            if repo:
+            if repo:  # only tokens + masks go to the hub (small); teacher logits stay on the box
                 from huggingface_hub import HfApi
                 api = HfApi(token=token)
                 api.create_repo(repo, repo_type="dataset", private=True, exist_ok=True)
@@ -60,6 +53,16 @@ def main():
             if repo:
                 cmd += ["--upload", repo]
             sh(*cmd)
+
+    # Phase 2 (teacher logits) runs on the same box right before phase 3. Kept local only: ~3 GB would
+    # blow the free Hugging Face quota. Resumable per shard, so a new box only redoes missing shards.
+    t = boot.get("teacher")
+    if t and not os.path.exists(os.path.join(tc["out_dir"], "DONE")):
+        cmd = [sys.executable, "-m", "scripts.teacher_logits", "--data", data_dir,
+               "--teacher", t["model"], "--k", str(t.get("k", 32))]
+        if t.get("max_rows"):
+            cmd += ["--max-rows", str(t["max_rows"])]
+        sh(*cmd)
 
     init = tc.get("init")
     if init and not os.path.exists(os.path.join(init, "model.pt")):

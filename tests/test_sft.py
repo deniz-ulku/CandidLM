@@ -47,3 +47,39 @@ def test_sft_training_resumes(tmp_path):
     a = run(dict(cfg, out_dir=str(tmp_path / "a")))
     b = run(dict(cfg, max_steps_this_run=5)) + run(cfg)
     assert np.allclose([r["loss"] for r in a], [r["loss"] for r in b], atol=1e-6)
+
+
+class FakeQwenTok:
+    """Mimics the parts of Qwen3.5's chat template that matter: refuses a prompt with no user turn,
+    and drops <think> blocks from assistant turns that are not the last one."""
+
+    def apply_chat_template(self, msgs, tokenize=True, return_dict=False, add_generation_prompt=False):
+        if not any(m["role"] == "user" for m in msgs):
+            raise ValueError("No user query found in messages.")
+        text = ""
+        for j, m in enumerate(msgs):
+            c = m["content"]
+            if m["role"] == "assistant" and j != len(msgs) - 1 and "</think>" in c:
+                c = c.split("</think>")[-1].strip()
+            text += f"<{m['role']}>{c}<end>"
+        if add_generation_prompt:
+            text += "<assistant>"
+        return [ord(ch) for ch in text]
+
+
+def test_render_with_mask_real_template_rules():
+    from candidlm.sft import render_with_mask
+    tok = FakeQwenTok()
+    msgs = [{"role": "user", "content": "2+2?"},
+            {"role": "assistant", "content": "<think>add</think>4"},
+            {"role": "user", "content": "times 3?"},
+            {"role": "assistant", "content": "<think>mul</think>12"}]
+    ids, mask = render_with_mask(tok, msgs)
+    text = "".join(chr(i) for i in ids)
+    trained = "".join(chr(i) for i, m in zip(ids, mask) if m)
+    assert text.startswith("<system>") and "12<end>" in text
+    assert trained == "<think>mul</think>12<end>"  # last turn trained; rewritten earlier turn skipped safely
+    plain = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "Hello."},
+             {"role": "user", "content": "bye"}, {"role": "assistant", "content": "Goodbye."}]
+    ids, mask = render_with_mask(tok, plain)
+    assert "".join(chr(i) for i, m in zip(ids, mask) if m) == "Hello.<end>Goodbye.<end>"

@@ -22,21 +22,39 @@ FORMAL_SYSTEM = (
 )
 
 
+def _render(tok, msgs, **kw) -> list[int]:
+    out = tok.apply_chat_template(msgs, tokenize=True, return_dict=False, **kw)
+    return list(out["input_ids"] if isinstance(out, dict) else out)
+
+
 def render_with_mask(tok, messages: list[dict], system: str | None = FORMAL_SYSTEM, **tmpl_kwargs):
-    """Tokenise a conversation with the model's chat template; mask = 1 on assistant tokens only."""
+    """Tokenise a conversation with the model's chat template; mask = 1 on assistant tokens only.
+
+    The whole conversation is rendered once. For each assistant turn i we render the prefix that
+    ends right before it (with the generation prompt) and the prefix that ends with it; the tokens
+    in between are that turn's answer. Prefixes are only ever cut at assistant turns, so they always
+    contain a user message (Qwen3.5's template refuses a system-only prefix). If a template rewrites
+    earlier turns (e.g. drops old <think> blocks), that turn's prefix won't line up and the turn is
+    left untrained rather than mislabelled; the last turn always lines up.
+    """
     msgs = list(messages)
     if system and (not msgs or msgs[0]["role"] != "system"):
         msgs = [{"role": "system", "content": system}] + msgs
-    ids: list[int] = []
-    mask: list[int] = []
+    last = max((i for i, m in enumerate(msgs) if m["role"] == "assistant"), default=None)
+    if last is None:
+        return [], []
+    msgs = msgs[: last + 1]  # nothing after the final answer is trained
+    ids = _render(tok, msgs, **tmpl_kwargs)
+    mask = [0] * len(ids)
     for i, m in enumerate(msgs):
-        upto = tok.apply_chat_template(msgs[: i + 1], tokenize=True, return_dict=False, **tmpl_kwargs)
-        upto = list(upto["input_ids"] if isinstance(upto, dict) else upto)
-        if upto[: len(ids)] != ids:  # template re-rendered earlier turns differently: fall back to whole-turn diff
-            upto = ids + upto[len(ids):]
-        new = upto[len(ids):]
-        ids += new
-        mask += [1 if m["role"] == "assistant" else 0] * len(new)
+        if m["role"] != "assistant" or not any(x["role"] == "user" for x in msgs[:i]):
+            continue
+        before = _render(tok, msgs[:i], add_generation_prompt=True, **tmpl_kwargs)
+        upto = ids if i == last else _render(tok, msgs[: i + 1], **tmpl_kwargs)
+        if upto[: len(before)] != before or ids[: len(upto)] != upto:
+            continue
+        for t in range(len(before), len(upto)):
+            mask[t] = 1
     return ids, mask
 
 

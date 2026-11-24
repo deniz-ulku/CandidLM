@@ -33,7 +33,10 @@ def main():
     for name in man["shards"]:
         path = os.path.join(a.data, name)
         sh = dict(np.load(path))
+        if a.max_rows and done_rows >= a.max_rows:
+            break  # budget reached (counts shards finished before a restart too)
         if "topk_idx" in sh:
+            done_rows += sh["tokens"].shape[0]
             continue  # resumable: shard already has teacher logits
         tokens = sh["tokens"]
         N, W = tokens.shape
@@ -51,8 +54,6 @@ def main():
         os.replace(path + ".tmp.npz", path)
         done_rows += N
         print(f"[teacher] {name}: {N} windows", flush=True)
-        if a.max_rows and done_rows >= a.max_rows:
-            break
 
 
 if __name__ == "__main__":
